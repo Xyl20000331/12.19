@@ -1,0 +1,207 @@
+import java.io.*;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.DayOfWeek;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.ResolverStyle;
+import java.util.HashSet;
+import java.util.Scanner;
+import java.util.Set;
+
+public class NewTrade {
+    Set<String> csvCompanyCodes = new HashSet<>();
+
+    public void tradeInput(String csvFilepath, String tradeFileName, Scanner scanner) {
+        // CSVファイルの中のcompanycodeを集合csvCompanyCodesに追加
+        try (BufferedReader csvReader = new BufferedReader(new FileReader(csvFilepath))) {
+            String line;
+            while ((line = csvReader.readLine()) != null) {
+                String[] data = line.split("\t");
+                if (data.length >= 1) {
+                    csvCompanyCodes.add(data[0]); // 添加到csvCompanyCodes集合中
+                }
+            }
+        } catch (IOException e) {
+            System.out.println("読み取り失敗：ファイルが存在しません。");
+            return;
+        }
+
+        LocalDateTime tradeTime = getLocalDateTime(scanner);
+        System.out.println("取引日時:" + tradeTime.toString().replace("T", " "));
+
+        String companyCode = getCompanyCode(scanner);
+        System.out.println("銘柄:" + companyCode);
+        Position position = Portfolio.getInstance().getPositionByCode(companyCode);
+
+        long positionQuantity = 0;
+
+        if (position != null) {
+            positionQuantity = position.quantity;
+        }
+
+        TradeType tradeType = getTransactionType(scanner);
+        System.out.println("売買区分:" + tradeType);
+
+        long quantity = getQuantity(scanner, tradeType, positionQuantity);
+        System.out.println("数量:" + quantity);
+
+        BigDecimal unitPrice = getUnitPrice(scanner);
+        System.out.println("取引単価:" + unitPrice);
+
+        saveTradeToCsv(tradeFileName, tradeTime, companyCode, tradeType, quantity, unitPrice);
+        System.out.println("取引入力成功");
+    }
+
+    //csvファイルに書き込む
+    private void saveTradeToCsv(String tradeFileName,
+                                LocalDateTime tradeTime,
+                                String companyCode,
+                                TradeType tradeType,
+                                long quantity,
+                                BigDecimal unitPrice) {
+
+        try (BufferedWriter csvWriter = new BufferedWriter(new FileWriter(tradeFileName, true))) {
+            csvWriter.write(
+                    tradeTime.toString().replace("T", " ") + "\t"
+                            + companyCode + "\t"
+                            + tradeType.name() + "\t"
+                            + quantity + "\t"
+                            + unitPrice.toString());
+            csvWriter.newLine();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+    }
+
+    //取引時間の入力
+    private LocalDateTime getLocalDateTime(Scanner scanner) {
+        // 取引時間の形を定義
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("uuuu/MM/dd HH:mm").withResolverStyle(ResolverStyle.STRICT);
+
+        while (true) {
+            System.out.println("取引日時（yyyy/MM/dd HH:mm）を入力してください（例: 2023/09/26 14:30）:");
+
+            try {
+                String tradeDateTimeStr = scanner.nextLine();
+                LocalDateTime tradeDateTime = LocalDateTime.parse(tradeDateTimeStr, formatter);
+                LocalDateTime now = LocalDateTime.now();
+
+                if (tradeDateTime.isAfter(now)) {
+                    // 今の時間と比較
+                    System.out.println("未来の日時は無効です。");
+                } else if (tradeDateTime.getDayOfWeek() == DayOfWeek.SATURDAY ||
+                        tradeDateTime.getDayOfWeek() == DayOfWeek.SUNDAY ||
+                        tradeDateTime.toLocalTime().isBefore(LocalTime.of(9, 0)) ||
+                        tradeDateTime.toLocalTime().isAfter(LocalTime.of(15, 0))) {
+                    // 非取引時間を排除
+                    System.out.println("取引は平日の9:00から15:00の間で行ってください。");
+                } else {
+                    return tradeDateTime;
+                }
+            } catch (Exception e) {
+                System.out.println("存在しない日時形式です。正しい形式で入力してください。");
+            }
+        }
+    }
+
+    private boolean isValidCompanyCode(String code) {
+        return code != null && code.matches("\\d{4}");
+    }
+
+    //codeの入力
+    private String getCompanyCode(Scanner scanner) {
+        while (true) {
+            System.out.print("銘柄コード> ");
+            String companycode = scanner.nextLine().trim();
+            if (companycode.isEmpty()) {
+                System.out.println("銘柄コードは必須です。4桁の半角数字で入力してください。");
+            } else if (isValidCompanyCode(companycode)) {
+                // codeがcsvファイルにあるかどうかをチェック
+                if (csvCompanyCodes.contains(companycode)) {
+                    return companycode;
+                } else {
+                    System.out.println("登録されている銘柄コードを入力してください。");
+                }
+            } else {
+                System.out.println("銘柄コードは4桁の半角数字で入力してください。");
+            }
+        }
+    }
+
+    // 取引タイプの入力
+    private TradeType getTransactionType(Scanner scanner) {
+        while (true) {
+            System.out.print("売買区分（売り: SELL, 買い: BUY）> ");
+            String transactionType = scanner.nextLine().trim();
+            transactionType = transactionType.toUpperCase();
+
+            if (!TradeType.isStringInTradeType(transactionType)) {
+                System.out.println("[BUY,SELL]の中から選んでください。");
+            } else {
+                return TradeType.valueOf(transactionType);
+            }
+        }
+    }
+
+    // 数量の入力
+    private long getQuantity(Scanner scanner, TradeType tradeType, long positionQuantity) {
+        String quantityInput;
+        while (true) {
+            System.out.print("数量（100株単位）> ");
+            quantityInput = scanner.nextLine();
+
+            // 入力された値が半角数字で九桁以下かをチェック
+            if (quantityInput.matches("^\\d{1,9}$")) {
+                long quantity = Long.parseLong(quantityInput);
+                while (true) {
+                    if (quantity > 0 && quantity % 100 == 0) {
+                        if (tradeType == TradeType.SELL && quantity > positionQuantity) {
+                            System.out.println("株式数が足りない、再入力してください。");
+                            System.out.println("残り株式数：" + positionQuantity);
+                            break;
+                        }
+                        return quantity;
+                    } else if (quantity < 0) {
+                        System.out.println("数量は正の値で入力してください。");
+                        break;
+                    } else if (quantity % 100 != 0) {
+                        System.out.println("100株単位で入力してください。");
+                        break;
+                    } else {
+                        System.out.println("正の値で、100株単位で入力してください。");
+                        break;
+                    }
+                }
+            } else {
+                System.out.println("正の値で、九桁以下の半角数字で入力してください。");
+            }
+        }
+    }
+
+
+    // 単価の入力
+    private BigDecimal getUnitPrice(Scanner scanner) {
+        while (true) {
+            System.out.print("取引単価> ");
+            String unitPriceInput = scanner.nextLine();
+
+            // 入力された値が九桁以下かをチェック
+            if (unitPriceInput.matches("^\\d{1,9}(\\.\\d{1,2})?$")) {
+                BigDecimal unitPrice = new BigDecimal(unitPriceInput);
+
+                if (unitPrice.compareTo(BigDecimal.ZERO) > 0) {
+                    unitPrice = unitPrice.setScale(2, RoundingMode.DOWN);
+                    System.out.println("取引単価: " + unitPrice);
+                    return unitPrice;
+                } else {
+                    System.out.println("取引単価は正の数で入力してください。");
+                }
+            } else {
+                System.out.println("取引単価は九桁以下の数値で入力してください。");
+            }
+        }
+    }
+}
